@@ -3,59 +3,59 @@
 	<title>Fairy Dust | WebGL GPU particle experiment</title>
 	<script type="text/javascript">
 		var loadWorker;
-		if (typeof(Worker) !== "undefined") {
+		if (typeof (Worker) !== "undefined") {
 			loadWorker = new Worker("js/async-load.js");
 		} else {
 			console.log("Web Worker not available");
-		}		
+		}
 		function handleFileSelect(evt) {
 			file = evt.target.files[0];
 			if (file != null) {
 				document.getElementById("fileinfo").innerHTML = "... loading file content ...<br/>";
-				if(loadWorker){
+				if (loadWorker) {
 					loadWorker.postMessage(file);
-					loadWorker.onmessage = function(e){
+					loadWorker.onmessage = function (e) {
 						document.getElementById("fileinfo").innerHTML = e.data.statshtml;
-						if(onlocationinfo && e.data.stridedArrayBuffers){
+						if (onlocationinfo && e.data.stridedArrayBuffers) {
 							onlocationinfo(e.data);
 						}
 					}
 					return;
 				}
-				
+
 				var reader = new FileReader();
 				reader.onload = function (progressEvent) {
 					var before = Date.now();
 					var lines = this.result.split('\n');
-					var fileinfohtml = (lines.length-1) + " locations loaded<br />";
+					var fileinfohtml = (lines.length - 1) + " locations loaded<br />";
 					titles = lines[0].split('\t');
 					var min = []; max = []; avg = [];
-					for(var title = 0; title < titles.length; title++){
+					for (var title = 0; title < titles.length; title++) {
 						min[titles[title]] = Number.POSITIVE_INFINITY;
 						max[titles[title]] = Number.NEGATIVE_INFINITY;
 						avg[titles[title]] = 0;
 					}
 					for (var line = 1; line < lines.length; line++) {
-						if(lines[line] != ""){
+						if (lines[line] != "") {
 							val = lines[line].split('\t');
 							locations.push(val);
-							for(var title = 0; title < titles.length; title++){
+							for (var title = 0; title < titles.length; title++) {
 								var v = Number(val[title]);
-								
-								if(min[titles[title]] > v){
+
+								if (min[titles[title]] > v) {
 									min[titles[title]] = v;
 								}
-								if(max[titles[title]] < v){
+								if (max[titles[title]] < v) {
 									max[titles[title]] = v;
 								}
-								avg[titles[title]] += v /(lines.length-1);
+								avg[titles[title]] += v / (lines.length - 1);
 							}
 						}
-					}					
-					for(var title = 0; title < titles.length; title++){
-						fileinfohtml += titles[title].replace(/"/g,'') + ": "
+					}
+					for (var title = 0; title < titles.length; title++) {
+						fileinfohtml += titles[title].replace(/"/g, '') + ": "
 						+ min[titles[title]] + " - " + max[titles[title]] + " ("
-						+ Math.round(avg[titles[title]]*10)/10 + ") <br/>";
+						+ Math.round(avg[titles[title]] * 10) / 10 + ") <br/>";
 					}
 					fileinfohtml += "load time [ms]: " + (Date.now() - before) + "<br/>";
 					document.getElementById("fileinfo").innerHTML = fileinfohtml;
@@ -551,12 +551,12 @@ void main(void) {
 				return result;
 			}
 
-			this.distance = 28.0;
-			this.fov = 28.;
+			this.distance = 1.0;
+			this.fov = 45.;
 
-			this.centerX = -4;
-			this.centerY = -4;
-			this.centerZ = -4;
+			this.centerX = 0;
+			this.centerY = 0;
+			this.centerZ = 0;
 
 			this.respawnX = this.centerX;
 			this.respawnY = this.centerY;
@@ -691,8 +691,11 @@ void main(void) {
 			for (var k = 0; k < 128; k++) {
 				for (var j = 0; j < 128; j++) {
 					for (var i = 0; i < 128; i++) {
-						particles.push(i / 128. * w - 0.5 * w + attractorParameters.centerX, j / 128. * h - 0.5 * h + attractorParameters.centerY, k
-								/ 128. * d - 0.5 * d + attractorParameters.centerZ, 1.);
+						particles.push(
+							i / 128. * w - 0.5 * w + attractorParameters.centerX,
+							j / 128. * h - 0.5 * h + attractorParameters.centerY,
+							k / 128. * d - 0.5 * d + attractorParameters.centerZ,
+						 1.);
 					}
 				}
 			}
@@ -889,23 +892,26 @@ void main(void) {
 		}
 
 		var newlocations = false;
-		function onlocations(){
+		function onlocations() {
 			newlocations = true;
+
 		}
 
-		function updateParticlesFromLocations(){
-			if(newlocations){
+		function updateParticlesFromLocations() {
+			if (newlocations) {
 				if (it > 0) {
 					gl.activeTexture(gl.TEXTURE10);
 					gl.bindTexture(gl.TEXTURE_2D, texture_particles);
 					gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles2);
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, locations.stridedFloat32Arrays[0]);
+					gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_particles2, 0);
 				} else {
 					gl.activeTexture(gl.TEXTURE10);
 					gl.bindTexture(gl.TEXTURE_2D, texture_particles2);
 					gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles);
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, locations.stridedFloat32Arrays[0]);
+					gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_particles, 0);
 				}
-				gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.FLOAT, new Float32Array(locations.stridedArrayBuffer));
-				gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, locations.strided, 0);
 			}
 		}
 
@@ -1095,13 +1101,17 @@ void main(void) {
 				mouseDy = (mouseY - oldMouseY) * viewY;
 			}
 
+			if(newlocations){
+				updateParticlesFromLocations();
+			}
+
 			if (!halted)
 				advance();
 
 			var renderTexture = false;
 
 			//calculateBlurTextures();
-			stepParticles();
+			//stepParticles();
 
 			if (renderTexture) {
 				composite();
@@ -1174,19 +1184,23 @@ void main(void) {
 		}
 
 		var locations;
-		function onlocationinfo(locationinfo){
-			if(locationinfo){
+		function onlocationinfo(locationinfo) {
+			if (locationinfo) {
 				locations = locationinfo;
 				locations.float32Arrays = [];
-				for(title = 0; title < locations.titles.length; title++){
+				for (title = 0; title < locations.titles.length; title++) {
 					locations.float32Arrays[title] = new Float32Array(locations.arrayBuffers[title]);
 				}
-				if(onlocations){
+				locations.stridedFloat32Arrays = [];
+				for (var chunk = 0; chunk < locations.numChunks; chunk++) {
+					locations.stridedFloat32Arrays[chunk] = new Float32Array(locations.stridedArrayBuffers[chunk]);
+				}
+				if (onlocations) {
 					onlocations();
 				}
 				console.log("well done:");
 				console.log(locations);
-			}else{
+			} else {
 				console.log("something went wrong");
 			}
 		}
@@ -1220,7 +1234,7 @@ void main(void) {
 		function hide() {
 			hidden = !hidden;
 			document.getElementById("desc").style.setProperty('visibility', hidden ? 'hidden' : 'visible');
-		}		
+		}
 	</script>
 	<style type="text/css">
 		body {
