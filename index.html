@@ -23,42 +23,103 @@
 					return;
 				}
 
+				var arrayBuffers = [];
+				var float32Arrays = [];
+				var titles = [];
 				var reader = new FileReader();
 				reader.onload = function (progressEvent) {
 					var before = Date.now();
 					var lines = this.result.split('\n');
-					var fileinfohtml = (lines.length - 1) + " locations loaded<br />";
+					var endsWithNewLine = (lines[lines.length - 1] != "");
+					var numLines = lines.length - (endsWithNewLine ? 2 : 1);
+					var bufferLength = e.data.bufferLength ? e.data.bufferLength : (2048 * 1024); // defaulting to 2M
+					var numChunks = Math.ceil(numLines/bufferLength);
+					var statshtml = numLines + " samples loaded<br />";
 					titles = lines[0].split('\t');
 					var min = []; max = []; avg = [];
-					for (var title = 0; title < titles.length; title++) {
-						min[titles[title]] = Number.POSITIVE_INFINITY;
-						max[titles[title]] = Number.NEGATIVE_INFINITY;
-						avg[titles[title]] = 0;
+					for(var title = 0; title < titles.length; title++){
+						min[title] = Number.POSITIVE_INFINITY;
+						max[title] = Number.NEGATIVE_INFINITY;
+						avg[title] = 0;
+						arrayBuffers[title] = new ArrayBuffer(numLines*4);
+						float32Arrays[title] = new Float32Array(arrayBuffers[title]);
 					}
-					for (var line = 1; line < lines.length; line++) {
-						if (lines[line] != "") {
-							val = lines[line].split('\t');
-							locations.push(val);
-							for (var title = 0; title < titles.length; title++) {
-								var v = Number(val[title]);
-
-								if (min[titles[title]] > v) {
-									min[titles[title]] = v;
-								}
-								if (max[titles[title]] < v) {
-									max[titles[title]] = v;
-								}
-								avg[titles[title]] += v / (lines.length - 1);
+					var progress = 0;
+					for (var line = 1; line < numLines; line++) {
+						var newProgress = Math.floor(100 * line / (lines.length+1));
+						if(newProgress != progress){
+							progress = newProgress;
+							postMessage({statshtml: "parsing " + progress + "%<br/>"});
+						}
+						val = lines[line].split('\t');
+						for(var title = 0; title < titles.length; title++){
+							var v = Number(val[title]);
+							if(min[title] > v){
+								min[title] = v;
 							}
+							if(max[title] < v){
+								max[title] = v;
+							}
+							if(avg[title] == undefined){
+								avg[title] = 0;
+							}
+							avg[title] += v /(lines.length-1);
+							float32Arrays[title][line-1] = v;
 						}
 					}
-					for (var title = 0; title < titles.length; title++) {
-						fileinfohtml += titles[title].replace(/"/g, '') + ": "
-						+ min[titles[title]] + " - " + max[titles[title]] + " ("
-						+ Math.round(avg[titles[title]] * 10) / 10 + ") <br/>";
+					var escapedTitles = [];
+					for(var title = 0; title < titles.length; title++){
+						var escapedTitle = titles[title].replace(/"/g,'');
+						escapedTitles.push(escapedTitle);
+						statshtml += escapedTitle + ": "
+							+ min[title] + " - " + max[title] + " ("
+							+ Math.round(avg[title]*10)/10 + ") <br/>";
 					}
-					fileinfohtml += "load time [ms]: " + (Date.now() - before) + "<br/>";
-					document.getElementById("fileinfo").innerHTML = fileinfohtml;
+					statshtml += "parsing time [ms]: " + (Date.now() - before) + "<br/>";
+					postMessage({
+							statshtml: statshtml,
+						});
+
+					before = Date.now();
+					var strideTitles = e.data.strideTitles ? e.data.strideTitles : [1,2,3,4];
+					var stridedArrayBuffers = [];
+					var stridedFloat32Arrays = [];
+					for(var chunkIndex = 0; chunkIndex < numChunks; chunkIndex++){
+						stridedArrayBuffers[chunkIndex] = new ArrayBuffer(bufferLength * 16); // 4x4 for four float32 values of four bytes for the values for the given stride indices
+						stridedFloat32Arrays[chunkIndex]  = new Float32Array(stridedArrayBuffers[chunkIndex]);
+					}
+					var maxScale = Math.max(
+							(max[strideTitles[0]]-min[strideTitles[0]]),
+							(max[strideTitles[1]]-min[strideTitles[1]]),
+							(max[strideTitles[2]]-min[strideTitles[2]])
+						);
+
+					progress = -1;
+					for (var line = 0; line < numLines; line++) {
+						var newProgress = Math.floor(100 * line / (lines.length+1));
+						if(newProgress != progress){
+							progress = newProgress;
+							postMessage({statshtml: statshtml + "normalize into strided array chunks: " + progress + "%<br/>"});
+						}
+						var chunkIndex = Math.floor(line/bufferLength);
+						var chunkLine = line - chunkIndex * bufferLength;
+						var stridedFloat32Array = stridedFloat32Arrays[chunkIndex];
+						stridedFloat32Array[chunkLine*4 + 0] = (float32Arrays[strideTitles[0]][line]-avg[strideTitles[0]])/maxScale;
+						stridedFloat32Array[chunkLine*4 + 1] = (float32Arrays[strideTitles[1]][line]-avg[strideTitles[1]])/maxScale;
+						stridedFloat32Array[chunkLine*4 + 2] = (float32Arrays[strideTitles[2]][line]-avg[strideTitles[2]])/maxScale;
+						stridedFloat32Array[chunkLine*4 + 3] = (float32Arrays[strideTitles[3]][line]-avg[strideTitles[3]])/maxScale;
+					}
+					statshtml += "normalize into strided array chunks [ms]: "+ (Date.now() - before) + "<br/>";
+					postMessage({
+							statshtml: statshtml,
+							stats: {min: min, max: max, avg: avg},
+							titles: escapedTitles,
+							numLines: numLines,
+							numChunks: numChunks,
+							arrayBuffers: arrayBuffers,
+							bufferLength: bufferLength,
+							stridedArrayBuffers: stridedArrayBuffers
+						}, arrayBuffers.concat(stridedArrayBuffers));
 				};
 				reader.readAsText(file);
 			};
@@ -285,7 +346,7 @@ void main(void) // fragment
 	sum += texture2D(src_tex, vec2(uv.x, + 2.0*v + uv.y) ) * 0.12;
 	sum += texture2D(src_tex, vec2(uv.x, + 3.0*v + uv.y) ) * 0.09;
 	sum += texture2D(src_tex, vec2(uv.x, + 4.0*v + uv.y) ) * 0.05;
-		gl_FragColor.xyz = sum.xyz/0.98;
+	gl_FragColor.xyz = sum.xyz/0.98;
 	gl_FragColor.a = 1.;
 }
 	</script>
@@ -314,30 +375,46 @@ uniform vec2 mouseV;
 uniform float fps;
 uniform float time;
 uniform float frame;
+uniform vec4 scale;
+uniform vec4 color1;
 
 uniform mat4 projectionMatrix;
 uniform mat4 modelViewMatrix;
-uniform vec4 center;
+
+uniform float fov;
+uniform vec3 camera;
+uniform float pointSizeMin;
+uniform float pointSizeMax;
 
 varying vec4 col;
+varying float alphaFactor;
 			
 void main() {
 	vec4 pos = texture2D(sampler_particles, uv);
+	pos.xyz *= scale.xyz;
+
+	float distance = length(camera-(modelViewMatrix * pos).xyz);
+	gl_PointSize = scale.w*fov/distance;
+	
+	alphaFactor = 1.;
+	if(gl_PointSize < 1.){
+		alphaFactor = max(gl_PointSize, 1./16.);
+	}
+
+	col = color1;
+
 	pos.w = 1.;
-	pos -= center;
-
-	col = vec4(1.,1.,1., 0.1); // white
-	col = vec4(1.0, 0.5, 0.166, 0.33);
-	gl_PointSize = 1.;	
-
 	gl_Position = projectionMatrix  * modelViewMatrix * pos;
 }
 	</script>
 
 	<script type="x-shader/x-fragment" id="shader-particle-renderer-fs"> 
 varying vec4 col;
+varying float alphaFactor;
+
 void main() {
 	gl_FragColor = col;
+	gl_FragColor.a *= alphaFactor;
 }
 	</script>
 
@@ -365,37 +442,10 @@ uniform vec2 mouseV;
 uniform float fps;
 uniform float time;
 
-uniform vec4 params;
-uniform vec4 center;
-uniform vec4 respawn;
-uniform float noise;
-uniform float stepWidth;
-uniform float normalizeFactor;
-uniform float scatter;
-
 void main(void) {
 	vec4 noise4 = (texture2D(sampler_noise, uv+rnd.xy) - vec4(0.5))*vec4(2.,2.,2.,0.);
 	vec4 p = texture2D(sampler_particles, uv); // location of the particle in teh previous frame
-
-/*
-	vec4 dp = vec4(0.);
-
-	// Halvorsen attractor
-
-	dp.x = - params.x * p.x - 4. * p.y - 4. * p.z - p.y * p.y;
-	dp.y = - params.x * p.y - 4. * p.z - 4. * p.x - p.z * p.z;
-	dp.z = - params.x * p.z - 4. * p.x - 4. * p.y - p.x * p.x;
-
-	dp = mix(dp, normalize(dp), normalizeFactor);
-	dp = mix(dp, vec4(0.), scatter*noise4.x); 
-
-	
-	p += dp * stepWidth; // move along the trajectory 
-	p += noise4 * noise; // add some noise
-
-	p = mix(p, respawn , float(length(p) > 128.)); // reset when adrift
-*/
-
+	// nothing to do here (but ping pong)
 	gl_FragColor =p; // =)
 }
 	</script>
@@ -527,70 +577,57 @@ void main(void) {
 
 		//Threejs setup
 		var camera, scene, group, controls;
-		var gui, attractorParameters;
+		var gui, scopeParams;
 
-		var AttractorParams = function () {
+		var ScopeParams = function () {
 			this.Fps = 30; // reset every second anyway
 
-			this.a = 1.4;
-			this.b = 0;
-			this.c = 0;
-			this.d = 0.;
+			this.scaleX = 1;
+			this.scaleY = 1;
+			this.scaleZ = 1;
+			this.pointSize = 1;
 
-			this.stepWidth = 0.022;
-			this.scatter = 0.0;
-			this.normalize = 0.79;
+			this.distance = 4.0;
+			this.fov = 16.;
+			this.pointSizeMin = 0;
+			this.pointSizeMax = 12;
 
-			this.noise = 0.25;
-			this.noiseExp = -2;
-			this.noiseComputed = '';
+			this.color1 = [255, 128, 42];
+			
+			this.alpha = 0.33;
+			
+			this.additive = true;
+			this.autosaturate = true;
 
-			this.computeNoise = function () {
-				var result = Math.pow(10, this.noiseExp) * this.noise;
-				this.noiseComputed = result;
-				return result;
-			}
-
-			this.distance = 1.0;
-			this.fov = 45.;
-
-			this.centerX = 0;
-			this.centerY = 0;
-			this.centerZ = 0;
-
-			this.respawnX = this.centerX;
-			this.respawnY = this.centerY;
-			this.respawnZ = this.centerZ;
 		}
 
 		function load() {
-			attractorParameters = new AttractorParams();
-			/*
+			scopeParams = new ScopeParams();
 			gui = new dat.GUI();
-			gui.add(attractorParameters, 'Fps');
+			gui.add(scopeParams, 'Fps');
 	
-			var paramsFolder = gui.addFolder('Attractor Parameters');
-			paramsFolder.add(attractorParameters, 'a', 0, 3);
-	//		paramsFolder.add(attractorParameters, 'b', 0., 10.);
-	//		paramsFolder.add(attractorParameters, 'c', 0., 10.);
+			var scaleFolder = gui.addFolder('Scale (x10)');
+			scaleFolder.add(scopeParams, 'scaleX', 0, 10).listen();
+			scaleFolder.add(scopeParams, 'scaleY', 0, 10).listen();
+			scaleFolder.add(scopeParams, 'scaleZ', 0, 10).listen();
+			scaleFolder.add(scopeParams, 'pointSize', 0, 10).listen();
+
+			scopeParams.resetScale = function(){
+				scopeParams.scaleX = 1;
+				scopeParams.scaleY = 1;
+				scopeParams.scaleZ = 1;
+				scopeParams.pointSize = 1;
+			}
+			scaleFolder.add(scopeParams, 'resetScale');
 	
-			var animFolder = gui.addFolder('Integration Parameters')
-			animFolder.add(attractorParameters, 'stepWidth', 0., .025);
-			animFolder.add(attractorParameters, 'normalize', 0, 1);
-			animFolder.add(attractorParameters, 'scatter', 0, 1);
-			animFolder.add(attractorParameters, 'noiseExp', -5, 1.);
-			animFolder.add(attractorParameters, 'noise', 0., 1.);
-			animFolder.add(attractorParameters, 'noiseComputed').listen();
-			*/
-			/*
-					var visualFolder = gui.addFolder('Visualization Parameters');
-					visualFolder.add(attractorParameters, 'centerX', -50, 50);
-					visualFolder.add(attractorParameters, 'centerY', -50, 50);
-					visualFolder.add(attractorParameters, 'centerZ', -50, 50);
-					visualFolder.add(attractorParameters, 'respawnX', -5., 5.);
-					visualFolder.add(attractorParameters, 'respawnY', -5., 5.);
-					visualFolder.add(attractorParameters, 'respawnZ', -5., 5.);
-			*/
+			var colorFolder = gui.addFolder('Color')
+			colorFolder.addColor(scopeParams, 'color1');
+			colorFolder.add(scopeParams, 'alpha', 0, 1);
+			
+			var projectionFolder = gui.addFolder('Projection');
+			projectionFolder.add(scopeParams, 'fov', 12, 120).listen();
+			projectionFolder.add(scopeParams, 'distance', 1, 10).listen();
+
 			clearInterval(timer);
 			var c = document.getElementById("c");
 			try {
@@ -683,18 +720,18 @@ void main(void) {
 				}
 			}
 
-			// initial "block" of 128x128x32 points (half a million)
-			var w = 10.;
-			var h = 10.;
-			var d = 10.;
+			// initial "block" of 128x128x128 points (two millions)
+			var w = 1.;
+			var h = 1.;
+			var d = 1.;
 
 			for (var k = 0; k < 128; k++) {
 				for (var j = 0; j < 128; j++) {
 					for (var i = 0; i < 128; i++) {
 						particles.push(
-							i / 128. * w - 0.5 * w + attractorParameters.centerX,
-							j / 128. * h - 0.5 * h + attractorParameters.centerY,
-							k / 128. * d - 0.5 * d + attractorParameters.centerZ,
+							i / 128. * w - 0.5 * w,
+							j / 128. * h - 0.5 * h,
+							k / 128. * d - 0.5 * d,
 						 1.);
 					}
 				}
@@ -812,9 +849,9 @@ void main(void) {
 			var lookatZ = 0.;
 			group.position.set(lookatX, lookatY, lookatZ);
 
-			camera.position.set(0, 0, attractorParameters.distance);
+			camera.position.set(0, 0, scopeParams.distance);
 
-			camera.fov = attractorParameters.fov;
+			camera.fov = scopeParams.fov;
 			camera.projectionMatrix = new THREE.Matrix4().makePerspective(camera.fov, window.innerWidth / window.innerHeight, camera.near, camera.far);
 
 			controls.rotateSpeed = 1.0;
@@ -894,23 +931,21 @@ void main(void) {
 		var newlocations = false;
 		function onlocations() {
 			newlocations = true;
-
 		}
 
 		function updateParticlesFromLocations() {
 			if (newlocations) {
+				gl.activeTexture(gl.TEXTURE10);
 				if (it > 0) {
-					gl.activeTexture(gl.TEXTURE10);
-					gl.bindTexture(gl.TEXTURE_2D, texture_particles);
-					gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles2);
-					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, locations.stridedFloat32Arrays[0]);
-					gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_particles2, 0);
-				} else {
-					gl.activeTexture(gl.TEXTURE10);
 					gl.bindTexture(gl.TEXTURE_2D, texture_particles2);
 					gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles);
 					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, locations.stridedFloat32Arrays[0]);
 					gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_particles, 0);
+				} else {
+					gl.bindTexture(gl.TEXTURE_2D, texture_particles);
+					gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles2);
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, locations.stridedFloat32Arrays[0]);
+					gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_particles2, 0);
 				}
 			}
 		}
@@ -939,17 +974,19 @@ void main(void) {
 			gl.uniform1f(gl.getUniformLocation(program, "time"), time);
 			gl.uniform1f(gl.getUniformLocation(program, "frame"), framecount);
 
-			gl.uniform4f(gl.getUniformLocation(program, "params"), attractorParameters.a, attractorParameters.b, attractorParameters.c,
-					attractorParameters.d);
-			gl.uniform1f(gl.getUniformLocation(program, "noise"), attractorParameters.computeNoise());
-			gl.uniform1f(gl.getUniformLocation(program, "stepWidth"), attractorParameters.stepWidth);
-			gl.uniform1f(gl.getUniformLocation(program, "normalizeFactor"), attractorParameters.normalize);
-			gl.uniform1f(gl.getUniformLocation(program, "scatter"), attractorParameters.scatter);
-			gl.uniform4f(gl.getUniformLocation(program, "center"), attractorParameters.centerX, attractorParameters.centerY, attractorParameters.centerZ,
-					0.);
-			gl.uniform4f(gl.getUniformLocation(program, "respawn"), attractorParameters.respawnX, attractorParameters.respawnY,
-					attractorParameters.respawnZ, 1.);
-
+			gl.uniform4f(gl.getUniformLocation(program, "scale"), scopeParams.scaleX, scopeParams.scaleY, scopeParams.scaleZ, scopeParams.pointSize);
+			if(typeof(scopeParams.color1) == "string"){
+				var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(scopeParams.color1);
+				scopeParams.color1 = [
+					parseInt(result[1], 16),
+					parseInt(result[2], 16),
+					parseInt(result[3], 16)
+				];
+			}
+			gl.uniform4f(gl.getUniformLocation(program, "color1"), scopeParams.color1[0]/255, scopeParams.color1[1]/255, scopeParams.color1[2]/255, scopeParams.alpha);
+			gl.uniform1f(gl.getUniformLocation(program, "fov"), 1./Math.tan(scopeParams.fov/180*Math.PI));
+			gl.uniform3f(gl.getUniformLocation(program, "camera"), 0, 0, scopeParams.distance);
+			
 			gl.uniform1i(gl.getUniformLocation(program, "sampler_prev"), 0);
 			gl.uniform1i(gl.getUniformLocation(program, "sampler_prev_n"), 1);
 			gl.uniform1i(gl.getUniformLocation(program, "sampler_blur"), 2);
@@ -1103,6 +1140,7 @@ void main(void) {
 
 			if(newlocations){
 				updateParticlesFromLocations();
+				newlocations = false;
 			}
 
 			if (!halted)
@@ -1111,7 +1149,7 @@ void main(void) {
 			var renderTexture = false;
 
 			//calculateBlurTextures();
-			//stepParticles();
+			stepParticles();
 
 			if (renderTexture) {
 				composite();
@@ -1134,7 +1172,7 @@ void main(void) {
 			gl.bindBuffer(gl.ARRAY_BUFFER, particleBuffer);
 
 			gl.viewport(0, 0, viewX, viewY);
-			gl.bindFramebuffer(gl.FRAMEBUFFER, null); // we paint directly on screen
+			gl.bindFramebuffer(gl.FRAMEBUFFER, null); // draw directly on screen
 			gl.useProgram(prog_render_particles);
 			setUniforms(prog_render_particles);
 
@@ -1206,8 +1244,8 @@ void main(void) {
 		}
 
 		function fr() { // updates every second
-			//attractorParameters.Fps = frame;
-			//gui.__controllers[0].updateDisplay();
+			scopeParams.Fps = frame;
+			gui.__controllers[0].updateDisplay();
 			document.getElementById("fps").textContent = frame;
 
 			frame = 0; // reset the frame counter
@@ -1220,14 +1258,14 @@ void main(void) {
 			event.preventDefault();
 			event.stopPropagation();
 
-			var fovMAX = 1000;
+			var fovMAX = 130;
 			var fovMIN = 1;
 
-			camera.fov -= event.wheelDeltaY * 0.05;
+			camera.fov -= event.wheelDeltaY * 0.0033;
 			camera.fov = Math.max(Math.min(camera.fov, fovMAX), fovMIN);
 			camera.projectionMatrix = new THREE.Matrix4().makePerspective(camera.fov, window.innerWidth / window.innerHeight, camera.near, camera.far);
 
-			attractorParameters.fov = camera.fov;
+			scopeParams.fov = camera.fov;
 		}
 
 		var hidden = false;
