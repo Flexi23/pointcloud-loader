@@ -8,19 +8,35 @@
 		} else {
 			console.log("Web Worker not available");
 		}
+		var files = [];
+		var fileIDs = [];
+		function createFileID(file){
+				return file.name + '.' + file.size;
+		}
+		function gotFile(file){
+			return fileIDs.indexOf(createFileID(file)) > -1;
+		}
+		function addFile(file){
+			var fileID = createFileID(file);
+			files[fileID] = file;
+			fileIDs.push(fileID);			
+		}	
 		function handleFileSelect(evt) {
 			file = evt.target.files[0];
 			if (file != null) {
+				if(gotFile(file)){
+					return "file has already been loaded";
+				}
 				document.getElementById("fileinfo").innerHTML = "... loading file content ...<br/>";
 				if (loadWorker) {
-					loadWorker.postMessage(file);
+					loadWorker.postMessage({file: file, bufferLength: 512*512});
 					loadWorker.onmessage = function (e) {
 						document.getElementById("fileinfo").innerHTML = e.data.statshtml;
 						if (onlocationinfo && e.data.stridedArrayBuffers) {
 							onlocationinfo(e.data);
 						}
 					}
-					return;
+					return "parsing async";
 				}
 
 				var arrayBuffers = [];
@@ -263,7 +279,10 @@ uniform float fps;
 uniform float time;
 
 void main(void) {
-	gl_FragColor.rgb = hsl2rgb(length((uv-vec2(0.5,0.))*aspect),1., 0.5);
+//	gl_FragColor.rgb = hsl2rgb(length((uv-mouse)*aspect)*2.,1., 0.5);
+	gl_FragColor.rgb = texture2D(sampler_prev, uv).rgb;
+	gl_FragColor.rgb += (texture2D(sampler_blur, uv).rgb -texture2D(sampler_blur2, uv).rgb)*0.1 - 0.001;
+	gl_FragColor.rgb = clamp(gl_FragColor.rgb, 0.,1.);
 	gl_FragColor.a = 1.;
 }
 	</script>
@@ -294,10 +313,15 @@ uniform float frame;
 void main(void) {
 
 	gl_FragColor = vec4(0.);
-	gl_FragColor = texture2D(sampler_particles, uv_orig.yx); // particle position texture
-	gl_FragColor = mix(gl_FragColor, vec4(2.), texture2D(sampler_prev, uv_orig).x*0.1);
+	gl_FragColor = texture2D(sampler_particles, uv_orig.yx)+0.5; // particle position texture
 
-	gl_FragColor = texture2D(sampler_prev, uv_orig); //bypass
+	gl_FragColor = texture2D(sampler_blur, uv_orig); //bypass
+
+//	gl_FragColor.rgb = hsl2rgb(length((uv-mouse)*aspect)*2.,1., 0.5);
+
+//	gl_FragColor = mix(gl_FragColor, vec4(1.), texture2D(sampler_prev, uv_orig));
+
+//	gl_FragColor = mix(gl_FragColor, vec4(1.), texture2D(sampler_noise, uv + rnd.xy)*0.15);
 
 	gl_FragColor.a = 1.;
 }
@@ -368,6 +392,7 @@ uniform sampler2D sampler_particles;
 
 uniform vec4 rnd;
 uniform vec4 rainbow;
+uniform vec2 viewSize;
 uniform vec2 pixelSize;
 uniform vec2 aspect;
 uniform vec2 mouse;
@@ -394,7 +419,7 @@ void main() {
 	pos.xyz *= scale.xyz;
 
 	float distance = length(camera-(modelViewMatrix * pos).xyz);
-	gl_PointSize = scale.w*fov/distance;
+	gl_PointSize = scale.w*fov/distance*viewSize.y/2048.;
 	
 	alphaFactor = 1.;
 	if(gl_PointSize < 1.){
@@ -415,38 +440,6 @@ varying float alphaFactor;
 void main() {
 	gl_FragColor = col;
 	gl_FragColor.a *= alphaFactor;
-}
-	</script>
-
-	<script id="shader-fs-particles" type="x-shader/x-fragment"> 
-varying vec2 uv;
-
-uniform sampler2D sampler_prev;
-uniform sampler2D sampler_prev_n;
-uniform sampler2D sampler_blur;
-uniform sampler2D sampler_blur2;
-uniform sampler2D sampler_blur3;
-uniform sampler2D sampler_blur4;
-uniform sampler2D sampler_blur5;
-uniform sampler2D sampler_blur6;
-uniform sampler2D sampler_noise;
-uniform sampler2D sampler_noise_n;
-uniform sampler2D sampler_particles;
-
-uniform vec4 rnd;
-uniform vec4 rainbow;
-uniform vec2 pixelSize;
-uniform vec2 aspect;
-uniform vec2 mouse;
-uniform vec2 mouseV;
-uniform float fps;
-uniform float time;
-
-void main(void) {
-	vec4 noise4 = (texture2D(sampler_noise, uv+rnd.xy) - vec4(0.5))*vec4(2.,2.,2.,0.);
-	vec4 p = texture2D(sampler_particles, uv); // location of the particle in teh previous frame
-	// nothing to do here (but ping pong)
-	gl_FragColor =p; // =)
 }
 	</script>
 
@@ -494,7 +487,6 @@ void main(void) {
 		var prog_blur_horizontal;
 		var prog_blur_vertical;
 
-		var prog_update_particles;
 		var prog_render_particles;
 
 		var FBO_main;
@@ -509,7 +501,6 @@ void main(void) {
 		var FBO_blur6;
 
 		var FBO_particles;
-		var FBO_particles2;
 
 		var FBO_helper;
 		var FBO_helper2;
@@ -541,12 +532,11 @@ void main(void) {
 
 		// particle position buffer in a texture
 		var texture_particles;
-		var texture_particles2;
 
-		var particlesWidth = 2048;
-		var particlesHeight = 1024;
+		var particlesWidth = 512;
+		var particlesHeight = 512;
 
-		var particleCount = 128 * 128 * 128;// can also be set to lower than particlesWidth * particlesHeight
+		var particleCount = 64 * 64 * 64;// can also be set to lower than particlesWidth * particlesHeight
 
 		// main animation loop vars
 
@@ -554,7 +544,7 @@ void main(void) {
 		var sizeY = 512;
 
 		var viewX = sizeX; // viewport size (ideally exactly the texture size)
-		var viewY = sizeY * 2;
+		var viewY = sizeY;
 
 		var halted = false;
 		var delay = 1 / 60;
@@ -596,9 +586,44 @@ void main(void) {
 			
 			this.alpha = 0.33;
 			
-			this.additive = true;
-			this.autosaturate = true;
+		}
 
+		function onViewportChanged(){
+			viewX = window.innerWidth;
+			viewY = window.innerHeight;
+			c.width = viewX;
+			c.height = viewY;
+
+			var angle = 75;
+			var aspect = viewX / viewY;
+			var near = .1;
+			var far = 10000;
+
+			camera = new THREE.PerspectiveCamera(angle, aspect, near, far);
+			scene = new THREE.Scene();
+			group = new THREE.Object3D();
+			scene.add(camera);
+			scene.add(group);
+			camera.lookAt(group);
+
+			// Camera projection matrix 
+
+			updateMatrices();
+
+			controls = new THREE.TrackballControlsWithPropagation(camera);
+
+			group.position.set(0, 0, 0);
+
+			camera.position.set(0, 0, scopeParams.distance);
+
+			camera.fov = scopeParams.fov;
+			camera.projectionMatrix = new THREE.Matrix4().makePerspective(camera.fov, window.innerWidth / window.innerHeight, camera.near, camera.far);
+
+			controls.rotateSpeed = 1.0;
+			controls.zoomSpeed = 1.2;
+			controls.panSpeed = 0.8;
+
+			controls.dynamicDampingFactor = 0.15;
 		}
 
 		function load() {
@@ -664,18 +689,16 @@ void main(void) {
 				mouseX = event.clientX / viewX;
 				mouseY = 1 - event.clientY / viewY;
 			}
-			viewX = window.innerWidth;
-			viewY = window.innerHeight;
 
-			c.width = viewX;
-			c.height = viewY;
+			document.addEventListener("orientationchange", window.onresize = onViewportChanged);
 
+			onViewportChanged();
+			
 			prog_copy = createAndLinkProgram("shader-fs-copy");
 			prog_advance = createAndLinkProgram("shader-fs-advance");
 			prog_composite = createAndLinkProgram("shader-fs-composite");
 			prog_blur_horizontal = createAndLinkProgram("shader-fs-blur-horizontal");
 			prog_blur_vertical = createAndLinkProgram("shader-fs-blur-vertical");
-			prog_update_particles = createAndLinkProgram("shader-fs-particles");
 
 			gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
 
@@ -693,59 +716,50 @@ void main(void) {
 			gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, gl.FALSE, 8, 0);
 			gl.vertexAttribPointer(aTexLoc, 2, gl.FLOAT, gl.FALSE, 8, 32);
 
-			var noisePixels = [], pixels = [], pixels2 = [], pixels3 = [], pixels4 = [], pixels5 = [], pixels6 = [], particles = [], particlesIdx = [];
-			for (var j = 0; j < sizeY; j++) {
-				for (var i = 0; i < sizeX; i++) {
-					noisePixels.push(Math.random(), Math.random(), Math.random(), 1);
-					pixels.push(0, 0, 0, 1);
-					if (i < sizeX / 2 && j < sizeY / 2)
-						pixels2.push(0, 0, 0, 1);
-					if (i < sizeX / 4 && j < sizeY / 4)
-						pixels3.push(0, 0, 0, 1);
-					if (i < sizeX / 8 && j < sizeY / 8)
-						pixels4.push(0, 0, 0, 1);
-					if (i < sizeX / 16 && j < sizeY / 16)
-						pixels5.push(0, 0, 0, 1);
-					if (i < sizeX / 32 && j < sizeY / 32)
-						pixels6.push(0, 0, 0, 1);
+			var noiseFullBuffer = new ArrayBuffer(sizeX * sizeY * 16);
+			noiseFullBuffer.float32 = new Float32Array(noiseFullBuffer);
+			for(var i = 0; i < sizeX * sizeY; i++){
+				noiseFullBuffer.float32[i * 4 + 3] = 1;
+			}
+			var noiseFullBuffer = new ArrayBuffer(sizeX * sizeY * 16);
+			noiseFullBuffer.float32 = new Float32Array(noiseFullBuffer);
+			for(var i = 0; i < sizeX * sizeY * 4; i++){
+				noiseFullBuffer.float32[i] = Math.random();
+			}
+			var d = 1 / 512;
+			var locationCoordsBuffer = new ArrayBuffer(512 * 512 * 16);
+			locationCoordsBuffer.float32 = new Float32Array(locationCoordsBuffer);
+			for(var i = 0; i < 512 ; i++){
+				for(var j = 0; j < 512 ; j++){
+					locationCoordsBuffer.float32[(i * 512 + j)*2 + 0] = d / 2 + j * d;
+					locationCoordsBuffer.float32[(i * 512 + j)*2 + 1] = d / 2 + i * d;
 				}
 			}
+			var attributesBuffer = new ArrayBuffer(512 * 512 * 16);
+			attributesBuffer.float32 = new Float32Array(attributesBuffer);
 
-			var dX = 1 / particlesWidth;
-			var dY = 1 / particlesHeight;
-
-			for (var i = 0; i < particlesHeight; i++) {
-				for (var j = 0; j < particlesWidth; j++) {
-					particlesIdx.push(dX / 2 + j * dX, dY / 2 + i * dY); // coordinate lookup vectors (center of pixels)
-				}
-			}
-
-			// initial "block" of 128x128x128 points (two millions)
+			// initial "block" of 64x64x64 points
 			var w = 1.;
 			var h = 1.;
 			var d = 1.;
-
-			for (var k = 0; k < 128; k++) {
-				for (var j = 0; j < 128; j++) {
-					for (var i = 0; i < 128; i++) {
-						particles.push(
-							i / 128. * w - 0.5 * w,
-							j / 128. * h - 0.5 * h,
-							k / 128. * d - 0.5 * d,
-						 1.);
+			for (var k = 0; k < 64; k++) {
+				for (var j = 0; j < 64; j++) {
+					for (var i = 0; i < 64; i++) {
+						var index = k * 64 * 64 + j * 64 + i;
+						attributesBuffer.float32[index * 4 + 0] = i / 64. * w - 0.5 * w;
+						attributesBuffer.float32[index * 4 + 1] = j / 64. * h - 0.5 * h;
+						attributesBuffer.float32[index * 4 + 2] = k / 64. * d - 0.5 * d;
+						attributesBuffer.float32[index * 4 + 3] = 1;
 					}
 				}
 			}
 
 			FBO_main = gl.createFramebuffer();
 			FBO_main2 = gl.createFramebuffer();
-			var glPixels;
-			glPixels = new Float32Array(noisePixels);
-			texture_main_n = createAndBindTexture(glPixels, 1, FBO_main, gl.NEAREST);
-			texture_main2_n = createAndBindTexture(glPixels, 1, FBO_main2, gl.NEAREST);
-			glPixels = new Float32Array(noisePixels);
-			texture_main_l = createAndBindTexture(glPixels, 1, FBO_main, gl.LINEAR);
-			texture_main2_l = createAndBindTexture(glPixels, 1, FBO_main2, gl.LINEAR);
+			texture_main_n = createAndBindTexture(noiseFullBuffer.float32, 1, FBO_main, gl.NEAREST);
+			texture_main2_n = createAndBindTexture(noiseFullBuffer.float32, 1, FBO_main2, gl.NEAREST);
+			texture_main_l = createAndBindTexture(noiseFullBuffer.float32, 1, FBO_main, gl.LINEAR);
+			texture_main2_l = createAndBindTexture(noiseFullBuffer.float32, 1, FBO_main2, gl.LINEAR);
 
 			FBO_helper = gl.createFramebuffer();
 			FBO_helper2 = gl.createFramebuffer();
@@ -753,13 +767,13 @@ void main(void) {
 			FBO_helper4 = gl.createFramebuffer();
 			FBO_helper5 = gl.createFramebuffer();
 			FBO_helper6 = gl.createFramebuffer();
-			texture_helper = createAndBindTexture(new Float32Array(pixels), 1, FBO_helper, gl.NEAREST); // helper buffers for the two-pass Gaussian blur
+			texture_helper = createAndBindTexture(null, 1, FBO_helper, gl.NEAREST); // helper buffers for the two-pass Gaussian blur
 			// calculation basically
-			texture_helper2 = createAndBindTexture(new Float32Array(pixels2), 2, FBO_helper2, gl.NEAREST);
-			texture_helper3 = createAndBindTexture(new Float32Array(pixels3), 4, FBO_helper3, gl.NEAREST);
-			texture_helper4 = createAndBindTexture(new Float32Array(pixels4), 8, FBO_helper4, gl.NEAREST);
-			texture_helper5 = createAndBindTexture(new Float32Array(pixels5), 16, FBO_helper5, gl.NEAREST);
-			texture_helper6 = createAndBindTexture(new Float32Array(pixels6), 32, FBO_helper6, gl.NEAREST);
+			texture_helper2 = createAndBindTexture(null, 2, FBO_helper2, gl.NEAREST);
+			texture_helper3 = createAndBindTexture(null, 4, FBO_helper3, gl.NEAREST);
+			texture_helper4 = createAndBindTexture(null, 8, FBO_helper4, gl.NEAREST);
+			texture_helper5 = createAndBindTexture(null, 16, FBO_helper5, gl.NEAREST);
+			texture_helper6 = createAndBindTexture(null, 32, FBO_helper6, gl.NEAREST);
 
 			FBO_blur = gl.createFramebuffer();
 			FBO_blur2 = gl.createFramebuffer();
@@ -767,23 +781,19 @@ void main(void) {
 			FBO_blur4 = gl.createFramebuffer();
 			FBO_blur5 = gl.createFramebuffer();
 			FBO_blur6 = gl.createFramebuffer();
-			texture_blur = createAndBindTexture(new Float32Array(pixels), 1, FBO_blur, gl.LINEAR);
-			texture_blur2 = createAndBindTexture(new Float32Array(pixels2), 2, FBO_blur2, gl.LINEAR);
-			texture_blur3 = createAndBindTexture(new Float32Array(pixels3), 4, FBO_blur3, gl.LINEAR);
-			texture_blur4 = createAndBindTexture(new Float32Array(pixels4), 8, FBO_blur4, gl.LINEAR);
-			texture_blur5 = createAndBindTexture(new Float32Array(pixels5), 16, FBO_blur5, gl.LINEAR);
-			texture_blur6 = createAndBindTexture(new Float32Array(pixels6), 32, FBO_blur6, gl.LINEAR);
+			texture_blur = createAndBindTexture(null, 1, FBO_blur, gl.LINEAR);
+			texture_blur2 = createAndBindTexture(null, 2, FBO_blur2, gl.LINEAR);
+			texture_blur3 = createAndBindTexture(null, 4, FBO_blur3, gl.LINEAR);
+			texture_blur4 = createAndBindTexture(null, 8, FBO_blur4, gl.LINEAR);
+			texture_blur5 = createAndBindTexture(null, 16, FBO_blur5, gl.LINEAR);
+			texture_blur6 = createAndBindTexture(null, 32, FBO_blur6, gl.LINEAR);
 
 			FBO_noise = gl.createFramebuffer();
-			glPixels = new Float32Array(noisePixels);
-			texture_noise_n = createAndBindTexture(glPixels, 1, FBO_noise, gl.NEAREST);
-			texture_noise_l = createAndBindTexture(glPixels, 1, FBO_noise, gl.LINEAR);
+			texture_noise_n = createAndBindTexture(noiseFullBuffer.float32, 1, FBO_noise, gl.NEAREST);
+			texture_noise_l = createAndBindTexture(noiseFullBuffer.float32, 1, FBO_noise, gl.LINEAR);
 
 			FBO_particles = gl.createFramebuffer();
-			texture_particles = createAndBindParticleTexture(new Float32Array(particles), FBO_particles);
-
-			FBO_particles2 = gl.createFramebuffer();
-			texture_particles2 = createAndBindParticleTexture(new Float32Array(particles), FBO_particles2);
+			texture_particles = createAndBindParticleTexture(attributesBuffer.float32, FBO_particles);
 
 			// lesson learned: the (frame) buffer location that we pass to the vertex shader has to be bound to the program before linking!
 
@@ -796,7 +806,7 @@ void main(void) {
 			gl.enableVertexAttribArray(aParticleLoc);
 			particleBuffer = gl.createBuffer();
 			gl.bindBuffer(gl.ARRAY_BUFFER, particleBuffer);
-			gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(particlesIdx), gl.STATIC_DRAW);
+			gl.bufferData(gl.ARRAY_BUFFER, locationCoordsBuffer.float32, gl.STATIC_DRAW);
 			gl.vertexAttribPointer(aParticleLoc, 2, gl.FLOAT, false, 8, 0);
 
 			gl.activeTexture(gl.TEXTURE2);
@@ -825,40 +835,6 @@ void main(void) {
 
 			gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 			gl.clearColor(0, 0, 0, 1);
-
-			var angle = 75;
-			var aspect = viewX / viewY;
-			var near = .1;
-			var far = 10000;
-
-			camera = new THREE.PerspectiveCamera(angle, aspect, near, far);
-			scene = new THREE.Scene();
-			group = new THREE.Object3D();
-			scene.add(camera);
-			scene.add(group);
-			camera.lookAt(group);
-
-			// Camera projection matrix 
-
-			updateMatrices();
-
-			controls = new THREE.TrackballControlsWithPropagation(camera);
-
-			var lookatX = 0.;
-			var lookatY = 0.;
-			var lookatZ = 0.;
-			group.position.set(lookatX, lookatY, lookatZ);
-
-			camera.position.set(0, 0, scopeParams.distance);
-
-			camera.fov = scopeParams.fov;
-			camera.projectionMatrix = new THREE.Matrix4().makePerspective(camera.fov, window.innerWidth / window.innerHeight, camera.near, camera.far);
-
-			controls.rotateSpeed = 1.0;
-			controls.zoomSpeed = 1.2;
-			controls.panSpeed = 0.8;
-
-			controls.dynamicDampingFactor = 0.15;
 
 			anim();
 		}
@@ -922,7 +898,7 @@ void main(void) {
 			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, glPixels);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-			gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+			//gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
 			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
 			checkFrameBuffer();
 			return texture;
@@ -933,20 +909,17 @@ void main(void) {
 			newlocations = true;
 		}
 
-		function updateParticlesFromLocations() {
+		function loadNewLocationTextures() {
 			if (newlocations) {
+				// assume only one file has been loaded and it's the last in the list of IDs
+				// TODO: catch the exceptional case that you tried to reload a file and it hasn't been parsed again since it had not changed in byte length too
+				var locations = files[fileIDs[fileIDs.length-1]].locations;
 				gl.activeTexture(gl.TEXTURE10);
-				if (it > 0) {
-					gl.bindTexture(gl.TEXTURE_2D, texture_particles2);
-					gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles);
-					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, locations.stridedFloat32Arrays[0]);
-					gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_particles, 0);
-				} else {
-					gl.bindTexture(gl.TEXTURE_2D, texture_particles);
-					gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles2);
-					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, locations.stridedFloat32Arrays[0]);
-					gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_particles2, 0);
-				}
+
+				gl.bindTexture(gl.TEXTURE_2D, texture_particles);
+				gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles);
+				gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, particlesWidth, particlesHeight, 0, gl.RGBA, gl.FLOAT, locations.stridedFloat32Arrays[1]);
+				gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_particles, 0);
 			}
 		}
 
@@ -966,6 +939,7 @@ void main(void) {
 			gl.uniform4f(gl.getUniformLocation(program, "rnd"), Math.random(), Math.random(), Math.random(), Math.random());
 			gl.uniform4f(gl.getUniformLocation(program, "rainbow"), rainbowR, rainbowG, rainbowB, 1);
 			gl.uniform2f(gl.getUniformLocation(program, "texSize"), sizeX, sizeY);
+			gl.uniform2f(gl.getUniformLocation(program, "viewSize"), viewX, viewY);
 			gl.uniform2f(gl.getUniformLocation(program, "pixelSize"), 1. / sizeX, 1. / sizeY);
 			gl.uniform2f(gl.getUniformLocation(program, "aspect"), Math.max(1, viewX / viewY), Math.max(1, viewY / viewX));
 			gl.uniform2f(gl.getUniformLocation(program, "mouse"), mouseX, mouseY);
@@ -1041,35 +1015,6 @@ void main(void) {
 			gl.flush();
 		}
 
-		function stepParticles() {
-			gl.viewport(0, 0, particlesWidth, particlesHeight);
-			gl.useProgram(prog_update_particles);
-			setUniforms(prog_update_particles);
-
-			if (it > 0) {
-				gl.activeTexture(gl.TEXTURE0);
-				gl.bindTexture(gl.TEXTURE_2D, texture_main_l);
-				gl.activeTexture(gl.TEXTURE1);
-				gl.bindTexture(gl.TEXTURE_2D, texture_main_n);
-
-				gl.activeTexture(gl.TEXTURE10);
-				gl.bindTexture(gl.TEXTURE_2D, texture_particles);
-				gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles2);
-			} else {
-				gl.activeTexture(gl.TEXTURE0);
-				gl.bindTexture(gl.TEXTURE_2D, texture_main2_l);
-				gl.activeTexture(gl.TEXTURE1);
-				gl.bindTexture(gl.TEXTURE_2D, texture_main2_n);
-
-				gl.activeTexture(gl.TEXTURE10);
-				gl.bindTexture(gl.TEXTURE_2D, texture_particles2);
-				gl.bindFramebuffer(gl.FRAMEBUFFER, FBO_particles);
-			}
-
-			gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-			gl.flush();
-		}
-
 		// main texture feedback warp
 		function advance() {
 
@@ -1101,16 +1046,14 @@ void main(void) {
 			gl.viewport(0, 0, viewX, viewY);
 			gl.useProgram(prog_composite);
 			setUniforms(prog_composite);
+			gl.activeTexture(gl.TEXTURE10);
+			gl.bindTexture(gl.TEXTURE_2D, texture_particles);
 			if (it < 0) {
-				gl.activeTexture(gl.TEXTURE10);
-				gl.bindTexture(gl.TEXTURE_2D, texture_particles);
 				gl.activeTexture(gl.TEXTURE0);
 				gl.bindTexture(gl.TEXTURE_2D, texture_main_l);
 				gl.activeTexture(gl.TEXTURE1);
 				gl.bindTexture(gl.TEXTURE_2D, texture_main_n);
 			} else {
-				gl.activeTexture(gl.TEXTURE10);
-				gl.bindTexture(gl.TEXTURE_2D, texture_particles2);
 				gl.activeTexture(gl.TEXTURE0);
 				gl.bindTexture(gl.TEXTURE_2D, texture_main2_l);
 				gl.activeTexture(gl.TEXTURE1);
@@ -1139,7 +1082,7 @@ void main(void) {
 			}
 
 			if(newlocations){
-				updateParticlesFromLocations();
+				loadNewLocationTextures();
 				newlocations = false;
 			}
 
@@ -1148,8 +1091,7 @@ void main(void) {
 
 			var renderTexture = false;
 
-			//calculateBlurTextures();
-			stepParticles();
+			calculateBlurTextures();
 
 			if (renderTexture) {
 				composite();
@@ -1179,22 +1121,25 @@ void main(void) {
 			gl.uniformMatrix4fv(gl.getUniformLocation(prog_render_particles, "projectionMatrix"), false, camera._projectionMatrixArray);
 			gl.uniformMatrix4fv(gl.getUniformLocation(prog_render_particles, "modelViewMatrix"), false, camera._viewMatrixArray);
 
-			if (it < 0) {
-				gl.activeTexture(gl.TEXTURE0);
-				gl.bindTexture(gl.TEXTURE_2D, texture_main_l);
-				gl.activeTexture(gl.TEXTURE10);
-				gl.bindTexture(gl.TEXTURE_2D, texture_particles2);
-			} else {
-				gl.activeTexture(gl.TEXTURE0);
-				gl.bindTexture(gl.TEXTURE_2D, texture_main2_l);
-				gl.activeTexture(gl.TEXTURE10);
-				gl.bindTexture(gl.TEXTURE_2D, texture_particles);
+			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+			gl.enable(gl.BLEND);
+
+			gl.activeTexture(gl.TEXTURE10);
+			for(var i = 0; i < fileIDs.length; i++){
+				var file = files[fileIDs[i]];
+				var lastChunk = file.locations.numChunks - 1;
+				for(var j = 0; j < file.locations.numChunks; j++){
+					var locationTexture = file.locations.textures[j];
+					gl.bindTexture(gl.TEXTURE_2D, locationTexture);
+					var pointCount = file.locations.bufferLength;
+					if(j == lastChunk){
+						pointCount = file.locations.numLines - file.locations.bufferLength * lastChunk
+					}
+					gl.drawArrays(gl.POINTS, 0, pointCount);
+				}
 			}
 
-			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-			gl.enable(gl.BLEND);
-			gl.drawArrays(gl.POINTS, 0, particleCount);
 			gl.disable(gl.BLEND);
 			gl.flush();
 		}
@@ -1220,23 +1165,25 @@ void main(void) {
 			group.matrixWorld.flattenToArray(group._objectMatrixArray);
 			group._modelViewMatrix.multiplyToArray(camera.matrixWorldInverse, group.matrixWorld, group._modelViewMatrixArray);
 		}
-
 		var locations;
-		function onlocationinfo(locationinfo) {
-			if (locationinfo) {
-				locations = locationinfo;
+		function onlocationinfo(locations) {
+			if (locations) {
 				locations.float32Arrays = [];
 				for (title = 0; title < locations.titles.length; title++) {
 					locations.float32Arrays[title] = new Float32Array(locations.arrayBuffers[title]);
 				}
 				locations.stridedFloat32Arrays = [];
+				locations.textures = [];
 				for (var chunk = 0; chunk < locations.numChunks; chunk++) {
 					locations.stridedFloat32Arrays[chunk] = new Float32Array(locations.stridedArrayBuffers[chunk]);
+					locations.textures[chunk] = createAndBindParticleTexture(locations.stridedFloat32Arrays[chunk], FBO_particles);
 				}
+				file.locations = locations;
+				addFile(file);
 				if (onlocations) {
 					onlocations();
 				}
-				console.log("well done:");
+				console.log("locations uploaded to WebGL textures:");
 				console.log(locations);
 			} else {
 				console.log("something went wrong");

@@ -8,7 +8,7 @@ onmessage = function(e) {
         var lines = this.result.split('\n');
         var endsWithNewLine = (lines[lines.length - 1] != "");
         var numLines = lines.length - (endsWithNewLine ? 2 : 1);
-        var bufferLength = e.data.bufferLength ? e.data.bufferLength : (2048 * 1024); // defaulting to 2M
+        var bufferLength = e.data.bufferLength ? e.data.bufferLength : (512 * 512); // defaulting to 2M
         var numChunks = Math.ceil(numLines/bufferLength);
         var statshtml = numLines + " samples loaded<br />";
         titles = lines[0].split('\t');
@@ -94,8 +94,9 @@ onmessage = function(e) {
                 numChunks: numChunks,
                 arrayBuffers: arrayBuffers,
                 bufferLength: bufferLength,
-                stridedArrayBuffers: stridedArrayBuffers
+                stridedArrayBuffers: stridedArrayBuffers,
+                file: e.data.file
             }, arrayBuffers.concat(stridedArrayBuffers));
     };
-    reader.readAsText(e.data);
+    reader.readAsText(e.data.file);
 }
