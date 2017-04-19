@@ -64,6 +64,21 @@ onmessage = function(e) {
             stridedArrayBuffers[chunkIndex] = new ArrayBuffer(bufferLength * 16); // 4x4 for four float32 values of four bytes for the values for the given stride indices
             stridedFloat32Arrays[chunkIndex]  = new Float32Array(stridedArrayBuffers[chunkIndex]);
         }
+        var normalization = e.data.normalization;
+        if(normalization == null){
+            normalization = {
+                scale: Math.max(
+                    (max[strideTitles[0]]-min[strideTitles[0]]),
+                    (max[strideTitles[1]]-min[strideTitles[1]]),
+                    (max[strideTitles[2]]-min[strideTitles[2]])
+                ),
+                offsetX: avg[strideTitles[0]],
+                offsetY: avg[strideTitles[1]],
+                offsetZ: avg[strideTitles[2]],
+                offsetT: avg[strideTitles[3]],
+           }
+
+        }
         var maxScale = Math.max(
                 (max[strideTitles[0]]-min[strideTitles[0]]),
                 (max[strideTitles[1]]-min[strideTitles[1]]),
@@ -80,15 +95,16 @@ onmessage = function(e) {
             var chunkIndex = Math.floor(line/bufferLength);
             var chunkLine = line - chunkIndex * bufferLength;
             var stridedFloat32Array = stridedFloat32Arrays[chunkIndex];
-            stridedFloat32Array[chunkLine*4 + 0] = (float32Arrays[strideTitles[0]][line]-avg[strideTitles[0]])/maxScale;
-            stridedFloat32Array[chunkLine*4 + 1] = (float32Arrays[strideTitles[1]][line]-avg[strideTitles[1]])/maxScale;
-            stridedFloat32Array[chunkLine*4 + 2] = (float32Arrays[strideTitles[2]][line]-avg[strideTitles[2]])/maxScale;
-            stridedFloat32Array[chunkLine*4 + 3] = (float32Arrays[strideTitles[3]][line]-avg[strideTitles[3]])/maxScale;
+            stridedFloat32Array[chunkLine*4 + 0] = (float32Arrays[strideTitles[0]][line]-normalization.offsetX)/normalization.scale;
+            stridedFloat32Array[chunkLine*4 + 1] = (float32Arrays[strideTitles[1]][line]-normalization.offsetY)/normalization.scale;
+            stridedFloat32Array[chunkLine*4 + 2] = (float32Arrays[strideTitles[2]][line]-normalization.offsetZ)/normalization.scale;
+            stridedFloat32Array[chunkLine*4 + 3] = (float32Arrays[strideTitles[3]][line]-normalization.offsetT)/normalization.scale;
         }
         statshtml += "normalize into strided array chunks [ms]: "+ (Date.now() - before) + "<br/>";
         postMessage({
                 statshtml: statshtml,
                 stats: {min: min, max: max, avg: avg},
+                normalization: normalization,
                 titles: escapedTitles,
                 numLines: numLines,
                 numChunks: numChunks,
